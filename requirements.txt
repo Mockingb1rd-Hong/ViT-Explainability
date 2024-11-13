@@ -1,0 +1,17 @@
+Pillow>=8.1.1
+einops == 0.3.0
+imageio >= 2.33
+matplotlib 
+numpy >= 1.19.0
+opencv_python
+scikit_image >= 0.23.1
+scipy
+scikit-learn
+torch >= 1.7.0
+torchvision >= 0.8.1
+tqdm >= 4.62.1
+transformers
+utils == 1.0.1
+captum
+wget
+ftfy

@@ -1,0 +1,3 @@
+python lxmert/lxmert/perturbation.py  --COCO_path /Hong/val2014/val2014/ --method ours_no_lrp --is-positive-pert True
+pip install -r lxmert/lxmert/requirements.txt
+python lxmert/lxmert/newpert.py  --COCO_path /Hong/val2014/val2014/ --method ours_no_lrp --is-positive-pert True

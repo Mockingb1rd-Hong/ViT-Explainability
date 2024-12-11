@@ -9,7 +9,7 @@ import cv2
 from scipy.ndimage import binary_opening, binary_closing, label
 
 from CLIP.clip.simple_tokenizer import SimpleTokenizer as _Tokenizer
-from my_explain import interpret_image_weighted
+from my_explain import interpret_image_weighted, interpret_text, interpret_image_ours, interpret_image_weighted_style, interpret_image
 
 _tokenizer = _Tokenizer()
 
@@ -86,6 +86,13 @@ def interpret(image, texts, model, device, start_layer, start_layer_text):
         cam = grad * cam
         cam = cam.reshape(batch_size, -1, cam.shape[-1], cam.shape[-1])
         cam = cam.clamp(min=0).mean(dim=1)
+        '''
+        # Print sizes of variables
+        print(f"Layer {i}:")
+        print(f"  grad size: {grad.size()}")
+        print(f"  cam size: {cam.size()}")
+        print(f"  R size: {R.size()}")
+        '''
         R = R + torch.bmm(cam, R)
     image_relevance = R[:, 0, 1:]
 
@@ -132,9 +139,11 @@ def show_image_relevance(image_relevance, image, orig_image, min_component_size=
     image_relevance = torch.nn.functional.interpolate(image_relevance, size=224, mode='bilinear')
     image_relevance = image_relevance.reshape(224, 224).cuda().data.cpu().numpy()
     image_relevance = (image_relevance - image_relevance.min()) / (image_relevance.max() - image_relevance.min())
+    # Add a small epsilon to avoid division by zero
 
     # print(image_relevance.max())
     # print(image_relevance.min())
+    # print(f"image_relevance: {image_relevance}")
     image = image[0].permute(1, 2, 0).data.cpu().numpy()
     image = (image - image.min()) / (image.max() - image.min())
     vis = show_cam_on_image(image, image_relevance)
@@ -151,18 +160,23 @@ def show_heatmap_on_text(text, text_encoding, R_text):
     R_text = R_text[CLS_idx, 1:CLS_idx]
     text_scores = R_text / R_text.sum()
     text_scores = text_scores.flatten()
-    print(text_scores)
+    # print(text_scores)
     text_tokens = _tokenizer.encode(text)
     text_tokens_decoded = [_tokenizer.decode([a]) for a in text_tokens]
     vis_data_records = [visualization.VisualizationDataRecord(text_scores, 0, 0, 0, 0, 0, text_tokens_decoded, 1)]
     visualization.visualize_text(vis_data_records)
 
-R_text, R_image = interpret(model=model, image=img, texts=text, device=device, start_layer=-1, start_layer_text=-1)
+# R_text, R_image = interpret(model=model, image=img, texts=text, device=device, start_layer=0, start_layer_text=0)
+R_text, _ = interpret(model=model, image=img, texts=text, device=device, start_layer=0, start_layer_text=0)
 hooks = register_hooks(model)
-R_image_weighted = interpret_image_weighted(model=model, image=img, texts=text, device=device)
+# R_text = interpret_text(model=model, image=img, texts=text, device=device, start_layer_text=0)
+# R_image = interpret_image(model=model, image=img, texts=text, device=device, start_layer=0)
+# R_image = interpret_image_weighted(model=model, image=img, texts=text, device=device, start_layer=2)
+R_image = interpret_image_ours(model=model, image=img, texts=text, device=device, start_layer=1)
+# R_image = interpret_image_weighted_style(model=model, image=img, texts=text, device=device)
+# print(f"R_image: {R_image}")
 for hook in hooks:
-    hook.remove()
-print(R_image)
+       hook.remove()
 batch_size = text.shape[0]
 for i in range(batch_size):
     show_heatmap_on_text(texts[i], text[i], R_text[i])

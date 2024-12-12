@@ -13,6 +13,9 @@ get_result.py
 
 Methods are all in my_explain.py
 
+Infos of image information in valid.json
+[valid.json](https://nlp.cs.unc.edu/data/lxmert_data/vqa/valid.json)
+
 dataset: MS_COCO_val2014
 
 ## Citation

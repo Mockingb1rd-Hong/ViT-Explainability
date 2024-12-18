@@ -177,6 +177,9 @@ def update_relevance_map_prev(R, equivalent_attention, one_hot, Y, Y_prime):
     alpha = alpha.view(-1, 1, 1)
     beta = beta.view(-1, 1, 1)
 
+    R_Y_prime_X = torch.bmm(equivalent_attention, R)
+    R_Y_prime_X = R_Y_prime_X.mean(dim=1)  # Average over the heads dimension
+
     R = torch.nn.functional.softmax(R, dim=-1)
     R = alpha * R + beta * R_Y_prime_X
     return R
@@ -215,16 +218,41 @@ def interpret_image(image, texts, model, device, start_layer=-1):
     return image_relevance
 
 def interpret_image_ours(model, image, texts, device, start_layer=-1):
-    """
-    Interpret image using weighted relevance across transformer blocks.
+    batch_size = texts.shape[0]
+    images = image.repeat(batch_size, 1, 1, 1)
+    logits_per_image, _ = model(images, texts)
+    probs = logits_per_image.softmax(dim=-1).detach().cpu().numpy()
+    index = [i for i in range(batch_size)]
+    one_hot = np.zeros((logits_per_image.shape[0], logits_per_image.shape[1]), dtype=np.float32)
+    one_hot[torch.arange(logits_per_image.shape[0]), index] = 1
+    one_hot = torch.from_numpy(one_hot).requires_grad_(True)
+    one_hot = torch.sum(one_hot.cuda() * logits_per_image)
+    model.zero_grad()
+    image_attn_blocks = list(dict(model.visual.transformer.resblocks.named_children()).values())
+    if start_layer == -1:
+        start_layer = (len(image_attn_blocks) - 1) // 3
+    num_tokens = image_attn_blocks[0].attn_probs.shape[-1]
+    R = torch.eye(num_tokens, num_tokens, dtype=image_attn_blocks[0].attn_probs.dtype).to(device)
+    R = R.unsqueeze(0).expand(batch_size, num_tokens, num_tokens)
     
-    Args:
-    model: The CLIP model
-    image: Input image tensor
-    texts: Input text tensor
-    device: Device to run computations on
-    """
-    # threshold = 0.009
+    # Initialize alpha sum
+    alpha_sum = torch.zeros(batch_size).to(device)
+    
+    for i, blk in enumerate(image_attn_blocks):
+        if i < start_layer:
+            continue
+        grad = torch.autograd.grad(one_hot, [blk.attn_probs], retain_graph=True)[0].detach()
+        cam = blk.attn_probs.detach()
+        equivalent_attention = compute_equivalent_attention(cam, grad)
+        Y = blk.input
+        Y_prime = blk.output
+        R, current_alpha = update_relevance_map_sum(R, equivalent_attention, one_hot, Y, Y_prime, alpha_sum)
+        alpha_sum = alpha_sum + current_alpha
+    # R = R * (-1)
+    image_relevance = R[:, 0, 1:]
+    return image_relevance
+
+def interpret_image_ours_2(model, image, texts, device, start_layer=-1):
     batch_size = texts.shape[0]
     images = image.repeat(batch_size, 1, 1, 1)
     logits_per_image, _ = model(images, texts)
@@ -239,7 +267,7 @@ def interpret_image_ours(model, image, texts, device, start_layer=-1):
     image_attn_blocks = list(dict(model.visual.transformer.resblocks.named_children()).values())
     if start_layer == -1:
         start_layer = (len(image_attn_blocks) - 1) // 3
-    print("start_layer = " + str(start_layer))
+    # print("start_layer = " + str(start_layer))
     num_tokens = image_attn_blocks[0].attn_probs.shape[-1]
     R = torch.eye(num_tokens, num_tokens, dtype=image_attn_blocks[0].attn_probs.dtype).to(device)
     R = R.unsqueeze(0)
@@ -250,27 +278,17 @@ def interpret_image_ours(model, image, texts, device, start_layer=-1):
     for i, blk in enumerate(image_attn_blocks):
         if i < start_layer:
             continue
-
         grad = torch.autograd.grad(one_hot, [blk.attn_probs], retain_graph=True)[0].detach()
         cam = blk.attn_probs.detach()
-
-        # Compute the equivalent attention matrix
         equivalent_attention = compute_equivalent_attention(cam, grad)
-        # print(f"cam :{equivalent_attention}")
-
-        # Update the relevance map with cumulative alpha
         Y = blk.input
         Y_prime = blk.output
         R, current_alpha = update_relevance_map_sum(R, equivalent_attention, one_hot, Y, Y_prime, alpha_sum)
-        
-        # Update alpha sum for next iteration
         alpha_sum = alpha_sum + current_alpha
 
-    # Extract the relevance of the image tokens
     image_relevance = R[:, 0, 1:]
     image_relevance = image_relevance.detach()
     return image_relevance
-
 
 def interpret_image_mine(image, texts, model, device, start_layer=-1):
     threshold = 0.009
@@ -287,9 +305,8 @@ def interpret_image_mine(image, texts, model, device, start_layer=-1):
 
     image_attn_blocks = list(dict(model.visual.transformer.resblocks.named_children()).values())
     if start_layer == -1:
-        # calculate index of last layer
-        start_layer = len(image_attn_blocks) - 1
-        # start_layer = (len(image_attn_blocks) - 1) // 2
+        # start_layer = len(image_attn_blocks) - 1
+        start_layer = (len(image_attn_blocks) - 1) // 2
 
     num_tokens = image_attn_blocks[0].attn_probs.shape[-1]
     R = torch.eye(num_tokens, num_tokens, dtype=image_attn_blocks[0].attn_probs.dtype).to(device)
@@ -304,11 +321,10 @@ def interpret_image_mine(image, texts, model, device, start_layer=-1):
         cam = grad * cam
         cam = cam.reshape(batch_size, -1, cam.shape[-1], cam.shape[-1])
         cam = cam.clamp(min=0).mean(dim=1)
-
-    # Apply thresholding to cam tensor
-    thresholded_cam = cam.clone()  # Create a copy of cam tensor
-    thresholded_cam[thresholded_cam < threshold] = 0.0  # Set values below threshold to 0
-    R = R + torch.bmm(thresholded_cam, R)
+        # Apply thresholding to cam tensor
+        thresholded_cam = cam.clone()  # Create a copy of cam tensor
+        thresholded_cam[thresholded_cam < threshold] = 0.0  # Set values below threshold to 0
+        R = R + torch.bmm(thresholded_cam, R)
     image_relevance = R[:, 0, 1:]
 
     return image_relevance
@@ -391,7 +407,7 @@ def interpret_text(texts, model, image, device, start_layer_text=-1):
     return text_relevance
 
 
-def interpret_image_weighted_prev(image, texts, model, device, start_layer=-1):
+def interpret_image_prev(image, texts, model, device, start_layer=-1):
     batch_size = texts.shape[0]
     images = image.repeat(batch_size, 1, 1, 1)
     logits_per_image, _ = model(images, texts)

@@ -129,7 +129,7 @@ image_infos = coco.get_images()
 no_object = 0
 
 
-sample_size = -1
+sample_size = 5000
 if len(image_infos) > sample_size and sample_size != -1:
     selected_image_infos = random.sample(image_infos, sample_size)
 else:
@@ -144,7 +144,7 @@ total_predictions = {step: 0 for step in steps}
 h_p_correct_predictions = {step: 0 for step in steps}
 w_p_correct_predictions = {step: 0 for step in steps}
 o_p_correct_predictions = {step: 0 for step in steps}
-#m_p_correct_predictions = {step: 0 for step in steps}
+# m_p_correct_predictions = {step: 0 for step in steps}
 
 pbar = tqdm(total=len(selected_image_infos), desc="Classifying images", dynamic_ncols=True)
 
@@ -175,19 +175,15 @@ for image_info in selected_image_infos:
         continue
     text = clip.tokenize(texts).to(device)
 
-    
-    # Register hooks before calling interpret_image_weighted
-    
 
-    R_image = interpret_image(model=model, image=image, texts=text, device=device, start_layer=0)
-    # R_image_mine = interpret_image_mine(model=model, image=image, texts=text, device=device)
     hooks = register_hooks(model)
+    R_image = interpret_image(model=model, image=image, texts=text, device=device, start_layer=0)
+    # R_image_mine = interpret_image_mine(model=model, image=image, texts=text, device=device, start_layer=0)
     R_image_ours = interpret_image_ours(model=model, image=image, texts=text, device=device)
     for hook in hooks:
        hook.remove()
     hooks = register_hooks(model)
     R_image_weighted = interpret_image_weighted(model=model, image=image, texts=text, device=device, start_layer=0)
-    # Don't forget to remove hooks after use
     for hook in hooks:
        hook.remove()
 
@@ -234,13 +230,13 @@ o_p_accuracy = {step: o_p_correct_predictions[step] / total_predictions[step] fo
 h_p_accuracy_array = [h_p_accuracy[step] for step in steps]
 w_p_accuracy_array = [w_p_accuracy[step] for step in steps]
 o_p_accuracy_array = [o_p_accuracy[step] for step in steps]
-#m_p_accuracy_array = [m_p_accuracy[step] for step in steps]
+# m_p_accuracy_array = [m_p_accuracy[step] for step in steps]
 
 print(f"No Objects: {no_object}")
 print(f"Chefer Accuracy: {h_p_accuracy_array}")
 print(f"Huang Accuracy: {w_p_accuracy_array}")
 print(f"Ours Accuracy: {o_p_accuracy_array}")
-#print(f"Mine Accuracy: {m_p_accuracy_array}")
+# print(f"Mine Accuracy: {m_p_accuracy_array}")
 
 # Plot the accuracies
 plt.figure(figsize=(10, 6))

@@ -9,7 +9,7 @@ import cv2
 from scipy.ndimage import binary_opening, binary_closing, label
 
 from CLIP.clip.simple_tokenizer import SimpleTokenizer as _Tokenizer
-from my_explain import interpret_image_weighted, interpret_text, interpret_image_ours, interpret_image_weighted_style, interpret_image
+from my_explain import interpret_image_weighted, interpret_text, interpret_image_ours, interpret_image_mine, interpret_image, interpret_image_ours_2
 
 _tokenizer = _Tokenizer()
 
@@ -42,7 +42,6 @@ img = preprocess(Image.open(img_path)).unsqueeze(0).to(device)
 texts = ["sunglasses"]
 text = clip.tokenize(texts).to(device)
 
-# threshold = 0.009  # Adjust the threshold value as desired
 
 def forward_hook(module, input, output):
     module.input = input[0]
@@ -55,7 +54,7 @@ def register_hooks(model):
         hooks.append(hook)
     return hooks
 
-def interpret(image, texts, model, device, start_layer, start_layer_text):
+def interpret(image, texts, model, device, start_layer=0, start_layer_text=0):
     batch_size = texts.shape[0]
     images = image.repeat(batch_size, 1, 1, 1)
     logits_per_image, logits_per_text = model(images, texts)
@@ -68,17 +67,16 @@ def interpret(image, texts, model, device, start_layer, start_layer_text):
     model.zero_grad()
 
     image_attn_blocks = list(dict(model.visual.transformer.resblocks.named_children()).values())
-    # print(len(list(dict(model.visual.transformer.resblocks.named_children()).values())))
-    if start_layer == -1:
-        # calculate index of last layer
-        start_layer = len(image_attn_blocks) - 1
 
+    if start_layer == -1: 
+      start_layer = len(image_attn_blocks) - 1
+    
     num_tokens = image_attn_blocks[0].attn_probs.shape[-1]
     R = torch.eye(num_tokens, num_tokens, dtype=image_attn_blocks[0].attn_probs.dtype).to(device)
     R = R.unsqueeze(0).expand(batch_size, num_tokens, num_tokens)
     for i, blk in enumerate(image_attn_blocks):
         if i < start_layer:
-            continue
+          continue
         grad = torch.autograd.grad(one_hot, [blk.attn_probs], retain_graph=True)[0].detach()
         cam = blk.attn_probs.detach()
         cam = cam.reshape(-1, cam.shape[-1], cam.shape[-1])
@@ -86,28 +84,20 @@ def interpret(image, texts, model, device, start_layer, start_layer_text):
         cam = grad * cam
         cam = cam.reshape(batch_size, -1, cam.shape[-1], cam.shape[-1])
         cam = cam.clamp(min=0).mean(dim=1)
-        '''
-        # Print sizes of variables
-        print(f"Layer {i}:")
-        print(f"  grad size: {grad.size()}")
-        print(f"  cam size: {cam.size()}")
-        print(f"  R size: {R.size()}")
-        '''
         R = R + torch.bmm(cam, R)
     image_relevance = R[:, 0, 1:]
 
     text_attn_blocks = list(dict(model.transformer.resblocks.named_children()).values())
 
-    if start_layer_text == -1:
-        # calculate index of last layer
-        start_layer_text = len(text_attn_blocks) - 1
+    if start_layer_text == -1: 
+      start_layer_text = len(text_attn_blocks) - 1
 
     num_tokens = text_attn_blocks[0].attn_probs.shape[-1]
     R_text = torch.eye(num_tokens, num_tokens, dtype=text_attn_blocks[0].attn_probs.dtype).to(device)
     R_text = R_text.unsqueeze(0).expand(batch_size, num_tokens, num_tokens)
     for i, blk in enumerate(text_attn_blocks):
         if i < start_layer_text:
-            continue
+          continue
         grad = torch.autograd.grad(one_hot, [blk.attn_probs], retain_graph=True)[0].detach()
         cam = blk.attn_probs.detach()
         cam = cam.reshape(-1, cam.shape[-1], cam.shape[-1])
@@ -117,12 +107,11 @@ def interpret(image, texts, model, device, start_layer, start_layer_text):
         cam = cam.clamp(min=0).mean(dim=1)
         R_text = R_text + torch.bmm(cam, R_text)
     text_relevance = R_text
-
+   
     return text_relevance, image_relevance
 
 
 def show_image_relevance(image_relevance, image, orig_image, min_component_size=100):
-    # create heatmap from mask on image
     def show_cam_on_image(img, mask):
         heatmap = cv2.applyColorMap(np.uint8(255 * mask), cv2.COLORMAP_JET)
         heatmap = np.float32(heatmap) / 255
@@ -139,11 +128,6 @@ def show_image_relevance(image_relevance, image, orig_image, min_component_size=
     image_relevance = torch.nn.functional.interpolate(image_relevance, size=224, mode='bilinear')
     image_relevance = image_relevance.reshape(224, 224).cuda().data.cpu().numpy()
     image_relevance = (image_relevance - image_relevance.min()) / (image_relevance.max() - image_relevance.min())
-    # Add a small epsilon to avoid division by zero
-
-    # print(image_relevance.max())
-    # print(image_relevance.min())
-    # print(f"image_relevance: {image_relevance}")
     image = image[0].permute(1, 2, 0).data.cpu().numpy()
     image = (image - image.min()) / (image.max() - image.min())
     vis = show_cam_on_image(image, image_relevance)
@@ -166,17 +150,18 @@ def show_heatmap_on_text(text, text_encoding, R_text):
     vis_data_records = [visualization.VisualizationDataRecord(text_scores, 0, 0, 0, 0, 0, text_tokens_decoded, 1)]
     visualization.visualize_text(vis_data_records)
 
-# R_text, R_image = interpret(model=model, image=img, texts=text, device=device, start_layer=0, start_layer_text=0)
-R_text, _ = interpret(model=model, image=img, texts=text, device=device, start_layer=0, start_layer_text=0)
+# R_text, R_image = interpret(model=model, image=img, texts=text, device=device, start_layer=0, start_layer_text=-1)
+# R_text, _ = interpret(model=model, image=img, texts=text, device=device, start_layer=0, start_layer_text=0)
 hooks = register_hooks(model)
-# R_text = interpret_text(model=model, image=img, texts=text, device=device, start_layer_text=0)
+R_text = interpret_text(model=model, image=img, texts=text, device=device, start_layer_text=0)
 # R_image = interpret_image(model=model, image=img, texts=text, device=device, start_layer=0)
-# R_image = interpret_image_weighted(model=model, image=img, texts=text, device=device, start_layer=2)
-R_image = interpret_image_ours(model=model, image=img, texts=text, device=device, start_layer=1)
-# R_image = interpret_image_weighted_style(model=model, image=img, texts=text, device=device)
+# R_image = interpret_image_ours(model=model, image=img, texts=text, device=device)
+R_image = interpret_image_ours_2(model=model, image=img, texts=text, device=device)
+# R_image = interpret_image_mine(model=model, image=img, texts=text, device=device, start_layer=-1)
 # print(f"R_image: {R_image}")
 for hook in hooks:
-       hook.remove()
+    hook.remove()
+
 batch_size = text.shape[0]
 for i in range(batch_size):
     show_heatmap_on_text(texts[i], text[i], R_text[i])
